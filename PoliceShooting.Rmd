@@ -1,0 +1,163 @@
+---
+title: "NYPD Shooting Incident Data Report"
+# author: "ND"
+date: "8/22/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Intro
+
+This dataset includes a collection of all the shooting incidents the NYPD recorded since 2006 to 2022.
+
+The data is manually extracted, posted on the NYPD, and managed by the NYC Open Data organization.
+
+Each entry is individual shooting occurrence and includes information information about the event such as the location and time and suspect and victim demographics.
+
+## Import Packages
+
+First, I'll load the necessary libraries. Makes sure all of these are installed on your local system. Ignore the warnings about retiring packages.
+
+```{r import_packages}
+library(tidyverse)
+library(lubridate)
+library(httr)
+```
+
+## Import and Load Data
+
+Then, get the data url.
+
+```{r get_jhu_data}
+## Get current data in the Police Shooting data file
+url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+```
+
+Let's read in the data.
+
+```{r import_data, message = FALSE}
+police_data = read_csv(url)
+head(police_data)
+```
+
+## Tidy and Transform Data
+
+First let's start by looking at the data's columns.
+
+```{r check_columns}
+sapply(police_data, class)
+```
+
+Now let's find the data with missing values.
+
+```{r find_missing_values}
+lapply(police_data, function(x) sum(is.na(x)))
+```
+
+We can see that there are a few cases where the spatial data for the incident (Latitude and Longitude) are missing. I'll assume that the location of the incidents is recorded or unknown, but is negligible anyway.
+
+Additionally, the description columns (LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, LOC_DESC) are commonly empty as well, perhaps due to police not providing these descriptions or they're removed to protect sensitive case data. Since understanding and analyzing a description requires manual or further analysis (i.e. keyword association) to be used, I'll ignore them for now.
+
+Perpetrator information (PERP_AGE_GROUP, PERP_SEX, PERP_RACE) are also sometimes blank or "Unknown", probably due to similar data privacy or admittance reasons as above, but I'll just keep those columns and highlight those values later. I'll remove the "extreme" values listed as codes.
+
+```{r remove_extremes}
+police_data = subset(police_data, PERP_AGE_GROUP!="1020" & PERP_AGE_GROUP!="224" & PERP_AGE_GROUP!="940")
+```
+
+Let's print out a summary of the data as well.
+
+```{r data_summary}
+summary(police_data)
+```
+## Add Visualization and Analysis
+
+### Research Question and Visualization 1:
+Which day and time do more crimes happen?
+
+To answer this question, I'll build a bar chart of crimes by day of the week and a line chart of crimes over the hours of a day.
+
+
+```{r}
+police_data$OCCUR_DAY = mdy(police_data$OCCUR_DATE)
+police_data$OCCUR_DAY = wday(police_data$OCCUR_DAY, label = TRUE)
+police_data$OCCUR_HOUR = hour(hms(as.character(police_data$OCCUR_TIME)))
+
+df_3 = police_data %>%
+  group_by(OCCUR_DAY) %>%
+  count()
+
+df_4 = police_data %>%
+  group_by(OCCUR_HOUR) %>%
+  count()
+```
+
+```{r}
+dayBar <- ggplot(df_3, aes(x = OCCUR_DAY, y = n)) +
+  geom_col() +
+  labs(title = "Which day of the week do more crimes happen?",
+       x = "Day of Occurence",
+       y = "Incident Count") +
+  theme_classic()
+dayBar
+```
+```{r}
+timePlot <- ggplot(df_4, aes(x = OCCUR_HOUR, y = n)) +
+  geom_line() +
+  labs(title = "At what time do more crimes happen?",
+       x = "Hour of Occurence",
+       y = "Incident Count") +
+  theme_classic()
+timePlot
+```
+
+Key Findings:
+- Weekends in NYC have the highest incident occurrence count and are most dangerous.
+- Crime incidents tend to happen in the evening and night time. This makes sense less people are outside or even awake and getaways are easier at night.
+
+### Research Question and Visualization 2:
+Which borough of New York has the most incidents? Which borough of New York has the most murder cases?
+
+To answer this question, I'll build a bar chart of incidents and murders by borough.
+
+```{r create bar chart}
+bar_chart <- ggplot(police_data, aes(x = BORO)) +
+  geom_bar() +
+  labs(title = "Crime in NYC Boroughs",
+       x = "New York City Boroughs",
+       y = "Incident Count") +
+  theme_classic()
+bar_chart
+```
+```{r}
+table(police_data$BORO, police_data$STATISTICAL_MURDER_FLAG)
+```
+#### Key Findings:
+- Brooklyn has the most incidents overall, followed by Bronx and then Queens.
+- Similarly, the number of murder cases follows the same pattern as that of incidents.
+- Murder cases as a percent of all cases is smallest in Manhattan at 21.4% when compared to other boroughs, while Staten Island has the highest at 26.4%.
+
+### Model 1:
+
+Logistic regression is a statistical model used to estimate the likelihood of an event occurring, such as to estimate the probability that a murder case happened in a certain area, on a certain day, or by a person with some profile.
+
+The output shows the coefficients, their standard errors, the z-statistic (sometimes called a Wald z-statistic), and the associated p-values. **PERP_SEXUnknown**, **PERP_AGE_GROUP45-64**, **PERP_AGE_GROUP65+**, **PERP_AGE_GROUPUnknown**, and **PERP_AGE_GROUP25-44** are statistically significant, as are the **latitude** and **longitude**. The logistic regression coefficients give the change in the log odds of the outcome for a one-unit increase in the predictor variable.
+
+```{r run logistic regression model}
+glm.fit <- glm(STATISTICAL_MURDER_FLAG ~ PERP_RACE + PERP_SEX + PERP_AGE_GROUP + OCCUR_HOUR + OCCUR_DAY + Latitude + Longitude, data = police_data, family = binomial)
+summary(glm.fit)
+```
+
+#### Key Points:
+- A person older than 65 as opposed a person whose age is less than 18, changes the log odds of murder by 1.03. 
+
+## Identify Potential Biases
+
+Police shooting crime data has numerous ethical and bias concerns, especially when it comes to neighborhood information and criminal profiles. If I created a hypothesis based on my prior knowledge of the NYC area or the types of people the NYPD might profile, I could've potentially created  a biased opinion against a borough like the Bronx or expected higher rates of arrests of African Americans based on recent news.
+
+In addition, I am limited by the way the data is already structured and the biases that may go with it that are not obvious in the data. For example, the data already identifies the borough in which the incident occurred, but it'd be interesting as future work to use the latitude and lngitude to plot the data on a map and highlight hot zones and blocks where crime is more likely to happen to counter more specific concentrations of crime spatially.
+
+## Resources
+* [NYPD Shooting Incident Data (Historic) - CKAN](https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic)
